@@ -1,0 +1,6 @@
+venv/
+__pycache__/
+*.pyc
+*.pth
+*.mp4
+video_tracking_carla/
