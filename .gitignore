@@ -4,3 +4,14 @@ __pycache__/
 *.pth
 *.mp4
 video_tracking_carla/
+venv/
+__pycache__/
+*.pth
+*.mp4
+*.pkl
+counting_*.csv
+hasil_*.txt
+lembar_*.png
+cek_*/
+video_tracking_carla/
+kode_untuk_readme.txt

@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from torch import nn
 import torchvision
 
@@ -6,12 +7,11 @@ from torchvision import transforms
 import numpy as np
 
 
-def select(hm, threshold):
+def select_legacy(hm, threshold):
     """
-    Keep only local maxima (kind of NMS).
-    We make sure to have no adjacent detection in the heatmap.
+    Versi lama: tekan puncak yang berjarak <= 2 sel (stride 32 -> ~64 piksel).
+    Dipertahankan agar hasil lama bisa direproduksi (--nms legacy).
     """
-
     pred = hm > threshold
     pred_centers = np.argwhere(pred)
 
@@ -29,6 +29,30 @@ def select(hm, threshold):
     return hm
 
 
+def select_pool(hm):
+    """
+    Ambil puncak lokal dengan max-pooling 3x3 (stride 1), lalu buang sel yang
+    bukan maksimum di lingkungannya.
+
+    Dasar: Zhou, Wang, Krahenbuhl (2019), "Objects as Points", arXiv:1904.07850,
+    bagian 4 (peak extraction): puncak diambil dengan max-pooling 3x3, sebagai
+    pengganti NMS. Dengan stride 32, radius 1 sel ~ 32 piksel, jadi dua mobil
+    yang berdekatan tidak ikut saling menekan seperti pada select_legacy.
+    Tidak bergantung pada threshold: threshold diterapkan di pred2box.
+    """
+    t = torch.from_numpy(np.ascontiguousarray(hm)).unsqueeze(0).unsqueeze(0)
+    keep = F.max_pool2d(t, kernel_size=3, stride=1, padding=1) == t
+    return hm * keep.squeeze(0).squeeze(0).numpy()
+
+
+def select(hm, threshold, mode="pool"):
+    if mode == "legacy":
+        return select_legacy(hm, threshold)
+    if mode == "pool":
+        return select_pool(hm)
+    raise ValueError(f"mode NMS tidak dikenal: {mode}")
+
+
 class ObjectDetector:
     """
     Initialize ObjectDetector by loading model
@@ -40,17 +64,18 @@ class ObjectDetector:
     INPUT_HEIGHT = 720
     MODEL_SCALE = 32
 
-    def __init__(self, model_pth, conf_threhsold):
+    def __init__(self, model_pth, conf_threhsold, nms="pool"):
         self.conf = conf_threhsold
+        self.nms = nms
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        print(f"Device: {self.device}")
+        print(f"Device: {self.device} | NMS: {self.nms}")
 
         # Define and load model
         self.model = centernet()
         self.model.load_state_dict(
-	    torch.load(model_pth, map_location=torch.device("cpu"))
-	)
+            torch.load(model_pth, map_location=torch.device("cpu"))
+        )
         self.model.to(self.device)
         self.model.eval()
 
@@ -68,15 +93,18 @@ class ObjectDetector:
     def detect(self, frame):
         """
         Detect objects on frame and return bounding boxes.
-        First resize image to expected shape.
         Pre-process for model input
         Extract heatmaps, and compute predicted bounding boxes
+        Setiap box berisi juga "score" (nilai heatmap di puncaknya).
         """
 
         input_tensor = self.preprocess(frame)
 
-        # Inference
-        hm, offset, whl = self.model(input_tensor.to(self.device).float().unsqueeze(0))
+        # Inference (tanpa gradient: lebih hemat memori dan sedikit lebih cepat)
+        with torch.no_grad():
+            hm, offset, whl = self.model(
+                input_tensor.to(self.device).float().unsqueeze(0)
+            )
 
         hm = torch.sigmoid(hm)
 
@@ -84,7 +112,7 @@ class ObjectDetector:
         offset = offset.cpu().detach().numpy().squeeze(0)
         whl = whl.cpu().detach().numpy().squeeze(0)
 
-        hm = select(hm, self.conf)
+        hm = select(hm, self.conf, self.nms)
 
         boxes = self.pred2box(hm, offset, whl, self.conf)
 
@@ -98,21 +126,15 @@ class ObjectDetector:
         pred = hm > thresh
         pred_center = np.where(hm > thresh)
 
-        # get regressions
+        # get regressions (urutan sama dengan np.where: row-major)
         pred_r = regr[:, pred].T
+        scores = hm[pred]
 
-        # wrap as boxes
-        # [xmin, ymin, width, height]
-        # size as original image.
         boxes = []
 
         pred_center = np.asarray(pred_center).T
-        # print(pred_r.shape)
-        # print(pred_angles)
-        # print(pred_angles.shape)
 
-        for center, b in zip(pred_center, pred_r):
-            # print(b)
+        for center, b, score in zip(pred_center, pred_r, scores):
             offset_xy = offset[:, center[0], center[1]]
             bbox = {
                 "x": (center[1] + offset_xy[0]) * self.MODEL_SCALE,
@@ -120,6 +142,7 @@ class ObjectDetector:
                 "w": b[0],
                 "h": b[1],
                 "l": b[2],
+                "score": float(score),
             }
 
             # discard negative values
@@ -141,11 +164,9 @@ class centernet(nn.Module):
     """
     Centernet simplified version
     Input = 1280x720 RGB image
-    Output = 4 heatmaps
-    * Main = [1, 45, 80]
-    * Offset = [2, 45, 80]
-    * Width/Height = [2, 45, 80]
-    * Cos/sin angle = [2, 45, 80]
+    Backbone = ResNet-18 sampai layer4 (stride 32), jadi peta keluaran
+    berukuran sekitar 23x40 (bukan 45x80). Cek dengan print(hm.shape).
+    Output = heatmap utama [1,H,W], offset [2,H,W], w/h/l [3,H,W]
     """
 
     def __init__(self):
@@ -154,7 +175,7 @@ class centernet(nn.Module):
         # Resnet-18 as backbone.
         basemodel = torchvision.models.resnet18(weights=None)
 
-        # Select only first layers up when you reach 160x90 dimensions with 256 channels
+        # Buang avgpool dan fc; sisanya sampai layer4 (512 channel, stride 32)
         self.base_model = nn.Sequential(*list(basemodel.children())[:-2])
 
         num_ch = 512
@@ -178,19 +199,14 @@ class centernet(nn.Module):
         )
 
     def forward(self, x):
-        # [b, 3, 720, 1280]
-
         x = self.base_model(x)
-        # [b, 128, 45, 80]
 
         assert not torch.isnan(x).any()
 
         outc = self.outc(x)
-        # [b, 1, 45, 80]
         assert not torch.isnan(outc).any()
 
         outo = self.outo(x)
-        # [b, 2, 45, 80]
         assert not torch.isnan(outo).any()
 
         outr = self.outr(x)
