@@ -1,263 +1,182 @@
-# 3D Bounding Box Tracking dan Penghitungan Mobil di Jalan
+# Deteksi, Tracking, Klasifikasi, dan Counting Kendaraan dengan Kotak 3D
 
-Pelacakan dan penghitungan kendaraan dengan kotak 3D pada video jalan raya dari satu kamera statis (misalnya di jembatan penyeberangan). Detektor CenterNet menghasilkan titik pusat dan ukuran kendaraan, posisinya diproyeksikan ke bidang jalan, dilacak dengan Kalman Filter, lalu dihitung saat melewati garis virtual. Hasilnya digambar sebagai kotak 3D lengkap dengan ID, kelas kendaraan (car, van, truck), dan estimasi kecepatan.
+Sistem untuk video jalan raya dari satu kamera statis (misalnya di jembatan penyeberangan). Empat fungsi utama:
 
-## Fitur
+| Fungsi | Modul | Metode | Rujukan |
+| --- | --- | --- | --- |
+| Deteksi | `detector.py`, `detection_filter.py` | CenterNet (ResNet-18) menghasilkan titik pusat dan ukuran; puncak heatmap dengan max-pooling 3x3; titik diproyeksikan ke bidang jalan | Zhou dkk. 2019; Hartley & Zisserman 2004 |
+| Tracking | `tracker.py`, `kalman_filter.py` | Kalman Filter constant velocity + asosiasi Hungarian dengan gerbang adaptif; opsional dua tahap (`--conf-low`) | Kalman 1960; Kuhn 1955; Bewley dkk. 2016; Zhang dkk. 2022 |
+| Klasifikasi | `classifier.py` | car / van / truck dari panjang terukur, dengan voting antar frame | heuristik proyek (belum ada rujukan) |
+| Counting | `counter.py` | garis virtual; satu track dihitung sekali; log `counting_log.csv` | heuristik proyek (belum ada rujukan) |
 
-- Deteksi kendaraan dengan model CenterNet (PyTorch, `.pth`, backbone ResNet-18, input 1280x720)
-- Ekstraksi puncak heatmap dengan max-pooling 3x3 (`--nms pool`, mengikuti CenterNet asli) atau cara lama (`--nms legacy`)
-- Proyeksi titik kontak ban ke bidang jalan memakai kalibrasi kamera (pitch, tinggi, focal length)
-- Kalman Filter dengan noise pengukuran yang bergantung pada jarak dan dimensi kendaraan yang terkunci, sehingga kotak lebih stabil
-- Asosiasi deteksi ke track memakai algoritma Hungarian (`scipy.optimize.linear_sum_assignment`) dengan gate adaptif (objek jauh lebih longgar)
-- Asosiasi dua tahap ala ByteTrack (opsional, `--conf-low`): deteksi skor rendah hanya menyambung track yang sudah ada, tidak membuat track baru
-- Objek baru baru digambar setelah beberapa kali terdeteksi, supaya deteksi palsu tidak muncul
-- Penghitungan kendaraan yang melewati garis virtual, per kelas (car, van, truck), dengan log CSV
-- Cache deteksi mentah (`--cache`), sehingga detektor cukup dijalankan sekali dan eksperimen tracking berikutnya jauh lebih cepat
-- Mode debug yang menandai setiap deteksi mentah (lolos atau ditolak beserta alasannya)
-- Alat penyetel kalibrasi interaktif dengan slider (`calibrate_tuner.py`)
-- Alat pelabelan titik mobil dan fine-tuning head heatmap, plus skrip evaluasi dan analisis
-
-## Struktur Proyek
-
-### Program utama
-
-| File                       | Fungsi                                                                                  |
-| -------------------------- | --------------------------------------------------------------------------------------- |
-| `multi_object_tracking.py` | Program utama: deteksi, tracking, penghitungan, tampilan, dan log hasil                 |
-| `kalman_filter.py`         | Kalman Filter (state: x, y, vy, w, h, l)                                                |
-| `object_detector.py`       | Pemuatan model CenterNet, inferensi, dan ekstraksi puncak heatmap                       |
-| `vehicle_shape.py`         | Bentuk kendaraan adaptif: kelas, dimensi, yaw, dan gambar kotak berorientasi            |
-| `utils.py`                 | Proyeksi 3D ke 2D, ray tracing ke bidang jalan, dan fungsi menggambar                   |
-| `calibrate_tuner.py`       | Alat penyetel kalibrasi kamera dengan slider                                            |
-
-### Alur pelabelan dan fine-tuning
-
-| File                   | Fungsi                                                                                         |
-| ---------------------- | ---------------------------------------------------------------------------------------------- |
-| `label_points.py`      | Alat pelabelan: satu klik per mobil, disimpan ke `labels.json`                                 |
-| `finetune_heatmap.py`  | Fine-tuning head heatmap CenterNet dengan label titik, menghasilkan `centernet-ft.pth`         |
-| `cek_fp.py`            | Evaluasi benar/palsu/terlewat per frame dan penyimpanan gambar frame dengan deteksi palsu terbanyak |
-
-### Skrip analisis hasil
-
-| File                  | Fungsi                                                                                         |
-| --------------------- | ---------------------------------------------------------------------------------------------- |
-| `lembar_hitungan.py`  | Membuat lembar gambar (`lembar_N.png`), satu frame per hitungan, untuk memeriksa hasil counting |
-| `analisis_cache.py`   | Melihat skor deteksi per frame dari cache pada area tertentu (konfigurasi ada di dalam file)   |
-| `bandingkan_ukuran.py`| Membandingkan panjang terukur deteksi fine-tune dengan model asli di lokasi yang sama          |
+Kotak 3D berorientasi (`box3d.py`, `visualize.py`) hanya untuk tampilan dan tidak memengaruhi hasil keempat fungsi di atas.
 
 ## Instalasi
 
-Butuh Python 3.10 atau lebih baru (diuji di Python 3.12, Ubuntu).
+Python 3.10 atau lebih baru (diuji di Python 3.12, Ubuntu).
 
 ```
 git clone https://github.com/angelinozulianohutapea/3d-car-classification-counting.git
 cd 3d-car-classification-counting
 python3 -m venv venv
 source venv/bin/activate
-pip install numpy scipy opencv-python torch torchvision tqdm
+pip install -r requirements.txt
 ```
 
-Setelah `source venv/bin/activate`, perintah `python` di bawah ini merujuk ke Python milik venv. Di luar venv, pakai `python3`.
-
-## Menyiapkan Model dan Video
-
-File model (`.pth`) dan video tidak disertakan di repositori karena ukurannya besar.
+Model (`.pth`) dan video tidak disertakan di repositori. Video harus berukuran **1280x720** (kalibrasi dan detektor mengasumsikan ukuran ini; program berhenti dengan pesan jelas bila ukurannya lain).
 
 - Model CenterNet: `<isi tautan unduhan atau cara melatih>`
 - Video contoh: `<isi sumber video>`
 
-Taruh keduanya di folder proyek, atau gunakan path lengkapnya saat menjalankan program.
+## Struktur
 
-**Ukuran video harus 1280x720.** Ukuran input detektor (`ObjectDetector.INPUT_WIDTH/HEIGHT`), titik pusat kamera pada matriks `K` (640, 360), dan tinggi gambar 720 pada proyeksi ke jalan semuanya tertulis tetap di kode. Video dengan resolusi lain perlu diubah ukurannya (atau kodenya disesuaikan) sebelum dipakai.
+```
+config.py            semua konstanta (kalibrasi, ambang, parameter tracking) beserta dasar nilainya
+geometry.py          model kamera, proyeksi 3D <-> 2D
+detector.py          CenterNet dan ekstraksi puncak heatmap
+detection_cache.py   simpan/muat deteksi mentah
+detection_filter.py  proyeksi ke jalan dan filter deteksi
+kalman_filter.py     Kalman Filter
+tracker.py           Track dan Tracker (asosiasi, siklus hidup track)
+classifier.py        klasifikasi car/van/truck
+counter.py           garis virtual dan log CSV
+box3d.py             dimensi dan arah kotak 3D (tampilan)
+visualize.py         menggambar hasil
+run.py               program utama
+tools/               kalibrasi, pelabelan, fine-tuning, evaluasi
+tests/               uji sintetis (tanpa video dan tanpa PyTorch)
+```
 
-## Cara Pakai
+## Cara pakai
 
 ### 1. Kalibrasi kamera
 
-Nilai kalibrasi bawaan (pitch 9.8 derajat, tinggi kamera 8.30 m, focal 770 px) berasal dari simulator CARLA, jadi untuk video nyata perlu disetel ulang.
+Nilai bawaan (pitch 9,8 derajat, tinggi 8,30 m, focal 770 px) berasal dari simulator CARLA, jadi untuk video nyata perlu disetel ulang:
 
 ```
-python calibrate_tuner.py VIDEO.mp4 --frame 100
+python -m tools.calibrate_tuner VIDEO.mp4 --frame 100
 ```
 
-Opsi: `--frame` (nomor frame), `--pitch` (awal, derajat), `--height` (awal, meter), `--focal` (awal, piksel).
+Setel `PITCH` sampai garis horizon pas, lalu `FOCAL` dan `HEIGHT` sampai grid searah marka jalan, geser `GRID_OX`, lalu letakkan kotak hijau (`REF_X`, `REF_Z`) di atas satu mobil. Tekan `q`; tiga baris yang tercetak (`PITCH_DEG`, `CAM_HEIGHT_M`, `FOCAL_PX`) disalin ke `config.py`. ESC untuk batal.
 
-Urutan menyetel:
-
-1. Setel `PITCH` sampai garis horizon kuning pas dengan horizon asli.
-2. Setel `FOCAL` dan `HEIGHT` sampai garis grid mengarah ke titik hilang yang sama dengan marka jalan.
-3. Geser `GRID_OX` supaya garis grid menempel di marka lajur.
-4. Geser `REF_X` dan `REF_Z` sampai kotak hijau berada di atas satu mobil, dengan alas menempel di aspal.
-5. Cek di jarak dekat dan jauh, lalu tekan `q` (ESC untuk batal).
-
-Terminal mencetak tiga baris nilai. Salin ke `multi_object_tracking.py` (`pitch_matrix`, tinggi kamera di `to_world_from_camera`, dan `K`). Slider `GRID_OX`, `GRID_OZ`, `LANE_W`, `REF_X`, dan `REF_Z` hanya alat bantu visual dan tidak ikut dicetak.
-
-Untuk percobaan cepat, tinggi kamera bisa ditimpa tanpa mengubah kode lewat `--cam-height`.
-
-### 2. Menjalankan tracking dan penghitungan
+### 2. Menjalankan
 
 ```
-python multi_object_tracking.py VIDEO.mp4 PATH_MODEL.pth
+python run.py VIDEO.mp4 MODEL.pth
+python run.py VIDEO.mp4 MODEL.pth --no-show --no-save --line-y 15
+python run.py VIDEO.mp4 MODEL.pth --cache det_low.pkl --conf 0.5 --conf-low 0.3 --no-show --no-save
 ```
 
-Contoh tanpa jendela (misalnya lewat SSH) dan tanpa menyimpan PNG tiap frame:
+Pada contoh terakhir, jalankan pertama membuat `det_low.pkl`; jalankan berikutnya memuatnya sehingga detektor tidak dijalankan lagi.
 
-```
-python multi_object_tracking.py VIDEO.mp4 PATH_MODEL.pth --no-show --no-save --line-y 15
-```
+| Opsi | Keterangan |
+| --- | --- |
+| `--conf` | Ambang skor deteksi (default 0,5) |
+| `--conf-low` | Aktifkan asosiasi dua tahap: deteksi skor antara `--conf-low` dan `--conf` hanya menyambung track yang ada. Harus > 0 dan < `--conf` |
+| `--line-y` | Posisi garis counting, meter dari kamera (default 15) |
+| `--cache` | File cache deteksi mentah: ada = dimuat, belum ada = dibuat |
+| `--cache-conf` | Ambang skor terendah saat membuat cache (default 0,2) |
+| `--no-show` | Tanpa jendela (SSH / VS Code remote) |
+| `--no-save` | Jangan simpan PNG tiap frame ke `output_frames/` |
+| `--play` | Langsung jalan tanpa menunggu tombol |
+| `-f N` | Putar otomatis sampai frame ke-N, setelahnya berhenti tiap frame |
+| `--debug` | Tandai deteksi mentah: hijau = lolos, kuning = lolos skor rendah, merah = ditolak (dengan alasan) |
 
-Contoh dengan cache deteksi dan asosiasi dua tahap:
+Tombol jendela: `SPASI` play/pause, `ESC` keluar. Parameter lain (batas lebar, jarak duplikat, tinggi kamera, dan seterusnya) ada di `config.py`.
 
-```
-python multi_object_tracking.py VIDEO.mp4 PATH_MODEL.pth --cache det_low.pkl --conf 0.5 --conf-low 0.3 --no-show --no-save
-```
-
-Pada jalankan pertama, deteksi mentah dibuat dan disimpan ke `det_low.pkl`. Pada jalankan berikutnya file itu dimuat dan detektor tidak dijalankan lagi.
-
-#### Opsi
-
-| Opsi              | Keterangan                                                                                                      |
-| ----------------- | --------------------------------------------------------------------------------------------------------------- |
-| `--conf`          | Ambang kepercayaan deteksi (default 0.5)                                                                        |
-| `--conf-low`      | Aktifkan asosiasi dua tahap (ByteTrack). Deteksi skor antara `--conf-low` dan `--conf` hanya menyambung track yang ada. Harus > 0 dan lebih kecil dari `--conf` |
-| `--line-y`        | Posisi garis virtual counting, dalam meter dari kamera (default 15.0)                                           |
-| `--nms`           | `pool` (default, max-pool 3x3) atau `legacy` (cara lama)                                                        |
-| `--cache`         | File cache deteksi mentah. Jika ada, dimuat; jika belum ada, dibuat. Hanya untuk `--nms pool`                   |
-| `--cache-conf`    | Ambang skor terendah saat membuat cache (default 0.2)                                                           |
-| `--max-width`     | Batas atas lebar kendaraan dalam meter; 0 = nonaktif (default 2.5)                                              |
-| `--conflict-dist` | Dua track yang lebih dekat dari jarak ini (meter) dianggap duplikat (default 3.0)                               |
-| `--cam-height`    | Timpa tinggi kamera (meter) untuk percobaan kalibrasi (default dari kode, 8.30)                                 |
-| `--no-show`       | Tanpa jendela (untuk SSH atau VS Code remote)                                                                   |
-| `--no-save`       | Jangan simpan PNG tiap frame (jauh lebih cepat)                                                                 |
-| `--play`          | Langsung jalan tanpa menunggu tombol (mode jendela)                                                             |
-| `-f N`            | Putar otomatis sampai frame ke-N, setelah itu berhenti di tiap frame                                            |
-| `--debug`         | Tandai semua deteksi mentah: hijau = lolos filter, kuning = lolos tetapi skor rendah, merah = ditolak (dengan alasan) |
-
-Tombol saat jendela tampil: `SPACE` untuk play/pause, `ESC` untuk keluar. Tanpa `--play` atau `-f`, program berhenti di tiap frame dan menunggu tombol.
-
-#### Cara kerja penghitungan
-
-- Garis virtual digambar merah pada kedalaman `--line-y`, selebar jalur valid (|x| ≤ 11 m).
-- Penghitungan tidak membedakan arah: track dianggap melintas saat posisinya berpindah dari satu sisi garis ke sisi lainnya.
-- Setiap track dihitung paling banyak sekali, dan hanya setelah track itu layak tampil (terdeteksi minimal 3 kali), supaya deteksi palsu sesaat tidak masuk hitungan.
-- Kelas yang dihitung: `car`, `van`, `truck`.
-
-#### Filter deteksi
-
-Sebelum masuk ke tracking, deteksi mentah dibuang bila:
-
-| Alasan (label `--debug`) | Kondisi                                                |
-| ------------------------ | ------------------------------------------------------ |
-| `luar jalur`             | posisi lateral di jalan \|x\| > 11 m                   |
-| `w kecil`                | lebar < 0.6 m                                          |
-| `tinggi`                 | tinggi < 1 m atau > 5 m                                |
-| `l pendek`               | panjang < 3 m                                          |
-| `h>l`                    | tinggi lebih besar dari panjang                        |
-
-Ringkasan jumlah deteksi yang dibuang per alasan dicetak di akhir program.
-
-#### Keluaran
+### 3. Keluaran
 
 - `counting_log.csv`: satu baris per kendaraan yang dihitung.
 
-  | Kolom                                    | Isi                                                      |
-  | ---------------------------------------- | -------------------------------------------------------- |
-  | `frame`                                  | frame saat kendaraan dihitung                            |
-  | `id`                                     | ID tampilan                                              |
-  | `kelas`                                  | kelas hasil voting                                       |
-  | `panjang_m`, `lebar_m`, `tinggi_m`       | dimensi terukur (median)                                 |
-  | `x_m`                                    | posisi lateral saat melintas                             |
-  | `suara_car`, `suara_van`, `suara_truck`  | jumlah suara tiap kelas                                  |
+  | Kolom | Isi |
+  | --- | --- |
+  | `frame` | frame saat dihitung |
+  | `id` | ID tampilan |
+  | `kelas` | kelas hasil voting |
+  | `panjang_m`, `lebar_m`, `tinggi_m` | dimensi terukur (median) |
+  | `x_m` | posisi lateral saat melintas |
+  | `suara_car`, `suara_van`, `suara_truck` | jumlah suara tiap kelas |
 
-- Ringkasan di terminal: hitungan per kelas dan total, daftar track yang tampil tetapi tidak dihitung (beserta keterangan), detail tiap kendaraan yang dihitung, dan statistik dimensi deteksi yang lolos (min / median / maks) dibandingkan dengan acuan mobil nyata.
-- `video_tracking_carla/image_XXXX.png`: frame hasil tiap frame (kecuali dengan `--no-save`).
-- File cache (`--cache`): berformat pickle. Muat hanya file yang Anda buat sendiri.
+- Ringkasan di terminal: hitungan per kelas, daftar track yang tampil tetapi tidak dihitung (dengan keterangan), detail tiap kendaraan, dan jumlah deteksi yang dibuang filter per alasan.
+- `output_frames/image_XXXX.png`: frame hasil (kecuali `--no-save`).
 
-## Melabeli dan Fine-tuning
+### Aturan penting
 
-Model CenterNet awal dilatih pada data simulasi CARLA. Untuk menyesuaikannya dengan video nyata, head heatmap (`outc`) dapat dilatih ulang memakai label titik. Backbone serta head offset dan ukuran dibekukan, dan tidak ada augmentasi.
+- **Counting**: track dianggap melintas saat posisinya berpindah dari satu sisi garis ke sisi lain (arah tidak dibedakan). Satu track dihitung paling banyak sekali, hanya setelah terdeteksi minimal 3 kali (`MIN_HITS_TO_DISPLAY`).
+- **Klasifikasi**: panjang < 5,2 m = car; < 7,0 m = van; selain itu truck. Tiap pengamatan memberi satu suara; kelas akhir adalah suara terbanyak.
+- **Filter deteksi**: dibuang bila di luar jalur (\|x\| > 11 m), lebar < 0,6 m, tinggi di luar 1 sampai 5 m, panjang < 3 m, atau tinggi > panjang.
 
-### 1. Melabeli titik mobil
+## Pelabelan, fine-tuning, dan evaluasi
 
-```
-python label_points.py VIDEO.mp4 --out labels.json --cache det_low.pkl
-```
-
-| Kontrol        | Fungsi                                                          |
-| -------------- | --------------------------------------------------------------- |
-| Klik kiri      | tambah titik (titik kontak mobil dengan jalan)                  |
-| Klik kanan     | hapus titik terdekat                                            |
-| `d` / `a`      | frame +1 / −1                                                   |
-| `w` / `s`      | frame +5 / −5                                                   |
-| `u`            | batalkan titik terakhir                                         |
-| `SPASI`        | tandai frame SELESAI (boleh 0 titik sebagai contoh negatif)     |
-| `m`            | tampil/sembunyi titik deteksi model dari cache (kuning)         |
-| `q` / `ESC`    | simpan dan keluar                                               |
-
-Opsi lain: `--start` (frame awal), `--scale` (perkecil jendela bila layar kecil). Pada frame yang ditandai SELESAI, **semua** mobil harus diberi titik, karena mobil tanpa titik dianggap latar saat pelatihan.
-
-### 2. Fine-tuning
+Model awal dilatih pada data simulasi CARLA. Untuk menyesuaikannya dengan video nyata, head heatmap dapat dilatih ulang dari label titik (backbone serta head offset dan ukuran dibekukan, tanpa augmentasi). Jalankan dari folder proyek:
 
 ```
-python finetune_heatmap.py VIDEO.mp4 centernet-3d-bbox.pth --val-from 330
+python -m tools.label_points VIDEO.mp4 --out labels.json --cache det_low.pkl
+python -m tools.finetune_heatmap VIDEO.mp4 centernet-3d-bbox.pth --val-from 330
+python -m tools.cek_fp VIDEO.mp4 centernet-ft.pth --conf 0.3 --from 330 --to 472 --out cek_ft
+python -m tools.lembar_hitungan VIDEO.mp4 --log counting_log.csv --line-y 15
 ```
 
-| Opsi         | Keterangan                                                                  |
-| ------------ | --------------------------------------------------------------------------- |
-| `--labels`   | file label (default `labels.json`)                                          |
-| `--out`      | model keluaran (default `centernet-ft.pth`)                                 |
-| `--val-from` | frame dengan nomor ≥ nilai ini dipakai sebagai validasi                     |
-| `--epochs`   | jumlah epoch (default 60)                                                   |
-| `--lr`       | learning rate Adam (default 1e-4)                                           |
-| `--sigma`    | lebar Gaussian target heatmap, satuan sel (default 0.8)                     |
+`label_points`: klik kiri tambah titik, klik kanan hapus, `d`/`a` frame ±1, `w`/`s` frame ±5, `u` batalkan, `SPASI` tandai SELESAI, `m` tampil/sembunyi titik model, `q`/ESC simpan dan keluar. Pada frame SELESAI, semua mobil harus diberi titik.
 
-Fungsi kerugian memakai focal loss untuk heatmap seperti pada CenterNet (Zhou, Wang, Krähenbuhl, 2019). Sebelum dan sesudah pelatihan dicetak jumlah deteksi benar, palsu, dan terlewat pada conf 0.2, 0.3, dan 0.5 (deteksi dianggap benar bila berjarak ≤ 48 piksel dari titik label).
+**Metrik deteksi** (`tools/metrics.py`, dipakai `finetune_heatmap` dan `cek_fp`): deteksi dianggap benar bila berjarak ≤ 48 piksel dari label yang belum terpakai, dihitung hanya di dalam jalur. Dilaporkan benar (TP), palsu (FP), terlewat (FN), serta precision, recall, dan F1. Karena label berupa titik, IoU dan mAP tidak berlaku. Dekode evaluasi memakai offset model, sama seperti `Detector`.
 
-### 3. Evaluasi dan analisis
+## Menyetel hasil
+
+| Gejala | Yang disesuaikan |
+| --- | --- |
+| Kotak masih goyang | naikkan `KF_STD_*` di `config.py` |
+| Kotak tertinggal saat mobil mengerem/mempercepat | naikkan `MAX_ACCEL` |
+| Ukuran kotak berubah-ubah | turunkan `DIM_STD_PER_STEP` |
+| Objek terlambat muncul | turunkan `MIN_HITS_TO_DISPLAY` |
+| ID sering berganti untuk mobil yang sama | naikkan `MAX_LOST_FRAMES` atau longgarkan `GATE_*` |
+| Mobil hilang-timbul sehingga tidak terhitung | aktifkan `--conf-low` dan/atau turunkan `--conf` |
+| Satu mobil menjadi dua track | naikkan `CONFLICT_DIST_M` |
+| Deteksi palsu masuk hitungan | naikkan `--conf`; periksa alasan penolakan dengan `--debug` |
+
+## Pengujian
 
 ```
-python cek_fp.py VIDEO.mp4 centernet-ft.pth --conf 0.3 --from 330 --to 472 --out cek_ft
-python lembar_hitungan.py VIDEO.mp4 --log counting_log.csv --line-y 15
+python -m tests.test_pipeline
 ```
 
-`cek_fp.py` mencetak jumlah benar, palsu, dan terlewat, lalu menyimpan gambar frame dengan deteksi palsu terbanyak (lingkaran merah = label, hijau = deteksi benar, kuning = deteksi palsu). `lembar_hitungan.py` membuat lembar gambar berisi satu frame per kendaraan yang dihitung, dengan penanda posisi saat melewati garis.
+Menguji geometri, Kalman Filter, klasifikasi, filter, tracking, dan counting dengan data sintetis (tanpa video dan tanpa PyTorch).
 
-`analisis_cache.py` dan `bandingkan_ukuran.py` adalah skrip eksperimen: nama file cache dan rentang frame ditulis langsung di dalam file, jadi sesuaikan sebelum dipakai.
+## Bagian tanpa rujukan literatur
 
-## Menyetel Hasil
+Bagian berikut dipilih manual dan diuji pada video uji; nilainya belum divalidasi dan perlu dievaluasi sebelum dijadikan klaim:
 
-Parameter utama ada di bagian konfigurasi `multi_object_tracking.py`, di `kalman_filter.py`, dan sebagai opsi baris perintah.
-
-| Gejala                                                       | Yang disesuaikan                                                   |
-| ------------------------------------------------------------ | ------------------------------------------------------------------ |
-| Kotak masih goyang                                           | Naikkan nilai di `measurement_noise()` (`kalman_filter.py`)        |
-| Kotak tertinggal saat mobil mengerem atau mempercepat        | Naikkan `MAX_ACCEL`                                                |
-| Ukuran kotak berubah-ubah                                    | Turunkan `DIM_STD_PER_STEP`                                        |
-| Objek terlambat muncul                                       | Turunkan `MIN_HITS_TO_DISPLAY` (default 3)                         |
-| ID sering berganti untuk mobil yang sama                     | Naikkan `MAX_LOST_FRAMES` (default 30) atau longgarkan gate di `_match()` |
-| Mobil terdeteksi hilang-timbul sehingga tidak terhitung      | Aktifkan `--conf-low` dan/atau turunkan `--conf`                   |
-| Satu mobil menjadi dua track                                 | Naikkan `--conflict-dist`                                          |
-| Deteksi palsu masuk hitungan                                 | Naikkan `--conf`, atau periksa dengan `--debug` alasan penolakannya |
-| Mobil lebar terpotong ukurannya                              | Ubah atau nonaktifkan `--max-width`                                |
+- ambang panjang klasifikasi (5,2 m dan 7,0 m), template dan batas ukuran per kelas, serta voting
+- bentuk dan angka gerbang asosiasi adaptif, `MAX_LOST_FRAMES`, `MIN_HITS_TO_DISPLAY`, `CONFLICT_DIST_M`
+- besaran Q dan R Kalman Filter (modelnya sendiri punya rujukan)
+- aturan garis virtual untuk counting
+- pencampuran template dan ukuran terukur, serta penghalusan yaw (hanya tampilan)
+- toleransi 48 piksel dan `--sigma` 0,8 pada fine-tuning
 
 ## Keterbatasan
 
-- Model CenterNet awal dilatih pada data simulasi CARLA, sehingga ada domain gap saat dipakai pada video jalan nyata. Deteksi dan ukuran kotak bisa kurang akurat, termasuk mobil yang tidak terdeteksi dan deteksi palsu.
-- Fine-tuning hanya melatih head heatmap (posisi pusat) dari label titik. Estimasi ukuran (lebar, tinggi, panjang) masih berasal dari model asli, sehingga klasifikasi car/van/truck yang bergantung pada ukuran masih bisa keliru, misalnya sedan terbaca sebagai truck.
-- Data latih dan validasi fine-tuning berasal dari satu video yang sama (dibagi menurut nomor frame), jadi hasilnya belum menunjukkan kemampuan pada video lain.
-- Kalibrasi kamera disetel manual dengan mata. Pitch, tinggi, dan focal length saling memengaruhi, jadi beberapa kombinasi bisa tampak cocok.
-- Bidang jalan diasumsikan datar dan kamera statis. Video harus berukuran 1280x720 (lihat bagian Menyiapkan Model dan Video).
-- Penghitungan tidak membedakan arah, dan track yang tidak sempat layak tampil sebelum melewati garis tidak dihitung.
-- Kecepatan adalah estimasi dari hasil kalibrasi, bukan pengukuran yang sudah divalidasi.
+- Model awal dilatih pada simulasi CARLA, sehingga ada domain gap pada video nyata: mobil bisa tidak terdeteksi, ada deteksi palsu, dan ukuran meleset.
+- Detektor tidak membedakan jenis kendaraan. Klasifikasi sepenuhnya bergantung pada panjang hasil kalibrasi, sehingga sedan bisa terbaca truck bila panjangnya meleset. Hanya mobil (3 kelas) yang ditangani; motor, bajaj, becak, dan sepeda belum.
+- Fine-tuning hanya melatih head heatmap (posisi pusat); estimasi ukuran masih dari model asli.
+- Data latih dan validasi berasal dari satu video (dibagi menurut nomor frame), jadi hasilnya belum menunjukkan kemampuan pada video lain.
+- Kalibrasi disetel manual; pitch, tinggi, dan focal saling memengaruhi.
+- Bidang jalan dianggap datar dan kamera statis. Resolusi harus 1280x720.
+- Counting tidak membedakan arah, dan track yang belum layak tampil saat melewati garis tidak dihitung. Dua kendaraan yang lebih dekat dari `CONFLICT_DIST_M` bisa dianggap duplikat.
+- Metrik tracking (MOTA, IDF1) dan klasifikasi (confusion matrix) belum ada karena belum ada label ID dan kelas.
 
-## Kredit dan Lisensi
+## Rujukan
+
+- X. Zhou, D. Wang, P. Krähenbühl, "Objects as Points", arXiv:1904.07850, 2019 (CenterNet, ekstraksi puncak, focal loss).
+- T.-Y. Lin dkk., "Focal Loss for Dense Object Detection", ICCV 2017.
+- Y. Zhang dkk., "ByteTrack: Multi-Object Tracking by Associating Every Detection Box", ECCV 2022, arXiv:2110.06864.
+- A. Bewley dkk., "Simple Online and Realtime Tracking", ICIP 2016, arXiv:1602.00763.
+- R. E. Kalman, "A New Approach to Linear Filtering and Prediction Problems", J. Basic Engineering 82(1), 1960.
+- Y. Bar-Shalom, X. R. Li, T. Kirubarajan, *Estimation with Applications to Tracking and Navigation*, Wiley, 2001.
+- H. W. Kuhn, "The Hungarian method for the assignment problem", Naval Research Logistics Quarterly 2(1-2), 1955.
+- D. F. Crouse, "On implementing 2D rectangular assignment algorithms", IEEE Trans. Aerospace and Electronic Systems 52(4), 2016.
+- R. Hartley, A. Zisserman, *Multiple View Geometry in Computer Vision*, 2nd ed., Cambridge University Press, 2004.
+- D. M. W. Powers, "Evaluation: From Precision, Recall and F-Measure to ROC, Informedness, Markedness and Correlation", Journal of Machine Learning Technologies 2(1), 2011.
 
 Proyek ini dikembangkan dari `https://github.com/antoinekeller/3d_bbox_highway.git`.
-
-Rujukan metode:
-
-- X. Zhou, D. Wang, P. Krähenbühl, "Objects as Points", arXiv:1904.07850, 2019 (CenterNet, ekstraksi puncak heatmap dan focal loss)
-- Y. Zhang dkk., "ByteTrack: Multi-Object Tracking by Associating Every Detection Box", arXiv:2110.06864, 2022 (asosiasi dua tahap)
 
 Pengembang: Angelino Zuliano Hutapea ([@angelinozulianohutapea](https://github.com/angelinozulianohutapea))
