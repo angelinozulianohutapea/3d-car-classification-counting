@@ -182,6 +182,13 @@ def test_two_way():
     assert {e[-1] for e in counter.events} == {"mendekat", "menjauh"}
 
 
+def test_config_thresholds_consistent():
+    # urutan ambang harus masuk akal supaya cache memuat semua deteksi yang dipakai tracker
+    assert 0 < cfg.CACHE_CONF_DEFAULT <= cfg.DEFAULT_CONF_LOW < cfg.DEFAULT_CONF <= 1
+    assert cfg.LANE_X_MIN < cfg.MEDIAN_X < cfg.LANE_X_MAX
+    assert cfg.TORCH_THREADS >= 1 and len(cfg.SCALES) >= 1
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

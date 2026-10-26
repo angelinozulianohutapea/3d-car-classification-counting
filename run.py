@@ -27,11 +27,13 @@ def parse_args():
     p = ArgumentParser(description="Deteksi, tracking, klasifikasi, dan counting kendaraan")
     p.add_argument("video")
     p.add_argument("model", help="Bobot CenterNet (.pth)")
-    p.add_argument("--conf", type=float, default=0.4, help="Ambang skor deteksi")
+    p.add_argument("--conf", type=float, default=cfg.DEFAULT_CONF,
+                   help="Ambang skor deteksi tinggi (boleh membuat track baru)")
     p.add_argument(
-        "--conf-low", type=float, default=0.2,
-        help="Aktifkan asosiasi dua tahap (ByteTrack, Zhang dkk. 2022): deteksi skor antara "
-        "ini dan --conf hanya menyambung track yang ada. Harus > 0 dan < --conf",
+        "--conf-low", type=float, default=cfg.DEFAULT_CONF_LOW,
+        help="Asosiasi dua tahap (ByteTrack, Zhang dkk. 2022), aktif secara bawaan: deteksi "
+        "skor antara ini dan --conf hanya menyambung track yang ada. Harus < --conf; "
+        "0 = matikan (satu tahap)",
     )
     p.add_argument("--line-y", type=float, default=cfg.LINE_Y_DEFAULT_M,
                    help="Garis counting kendaraan yang MENDEKAT (meter dari kamera)")
@@ -53,8 +55,10 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.conf_low is not None and args.conf_low <= 0:
+        args.conf_low = None  # 0 = satu tahap
     if args.conf_low is not None and not (0 < args.conf_low < args.conf):
-        raise SystemExit("--conf-low harus > 0 dan lebih kecil dari --conf")
+        raise SystemExit("--conf-low harus > 0 dan lebih kecil dari --conf (atau 0 untuk mematikan)")
     min_conf = args.conf_low if args.conf_low is not None else args.conf
     conf_split = args.conf if args.conf_low is not None else None
 

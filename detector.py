@@ -15,10 +15,9 @@ Perbaikan akurasi [heuristik, perlu dievaluasi pada video sendiri]:
   - koreksi gamma (mengangkat area gelap, mis. mobil hitam)
   - inferensi multi-skala, opsional flip horizontal (test-time augmentation)
   - penggabungan hasil dengan NMS berbasis jarak
-  - ambang dan opsi dibaca dari config.py (CONF, SCALES, GAMMA, FLIP, MERGE_DIST_PX)
+  - ambang dan opsi dibaca dari config.py (CACHE_CONF_DEFAULT, SCALES, GAMMA, FLIP,
+    MERGE_DIST_PX, TORCH_THREADS)
 """
-
-import os
 
 import cv2
 import numpy as np
@@ -39,7 +38,7 @@ class CenterNet(nn.Module):
     def __init__(self):
         super().__init__()
         base = torchvision.models.resnet18(weights=None)
-        self.base_model = nn.Sequential(*list(base.children())[:-2])
+        self.base_model = nn.Sequential(*list(base.children())[:-2])  # buang avgpool dan fc
 
         def head(out_ch, num_ch=512, head_conv=64):
             return nn.Sequential(
@@ -48,9 +47,9 @@ class CenterNet(nn.Module):
                 nn.Conv2d(head_conv, out_ch, kernel_size=1, stride=1),
             )
 
-        self.outc = head(1)
-        self.outo = head(2)
-        self.outr = head(3)
+        self.outc = head(1)  # heatmap pusat kendaraan
+        self.outo = head(2)  # offset sub-sel
+        self.outr = head(3)  # ukuran w, h, l (rasio terhadap jarak)
 
     def forward(self, x):
         x = self.base_model(x)
@@ -89,13 +88,24 @@ def apply_gamma(img, g):
 
 
 def select_pool(hm):
+    """
+    Pertahankan hanya sel yang maksimum lokal dalam jendela 3x3 (stride 1).
+    Tidak bergantung pada ambang; ambang diterapkan di decode_points.
+    Dengan stride 32, radius 1 sel ~ 32 piksel, sehingga dua mobil berdekatan
+    tidak saling menekan.
+    """
     t = torch.from_numpy(np.ascontiguousarray(hm)).unsqueeze(0).unsqueeze(0)
     keep = F.max_pool2d(t, kernel_size=3, stride=1, padding=1) == t
     return hm * keep.squeeze(0).squeeze(0).numpy()
 
 
 def decode_points(hm, offset, conf, stride=None):
-    """Puncak heatmap > conf sebagai dict {x, y (piksel), score, cy, cx}."""
+    """
+    hm: [H,W] probabilitas (sudah sigmoid), offset: [2,H,W].
+    stride: piksel gambar per sel heatmap (bawaan MODEL_SCALE; MODEL_SCALE / skala bila
+    input diperbesar). Mengembalikan puncak > conf sebagai dict {x, y (piksel), score, cy, cx},
+    urut baris-per-baris (row-major).
+    """
     stride = cfg.MODEL_SCALE if stride is None else stride
     peaks = select_pool(hm)
     out = []
@@ -134,16 +144,17 @@ def merge_boxes(boxes, dist=48.0):
 class Detector:
     def __init__(self, model_path, conf=None, scales=None, gamma=None, flip=None,
                  merge_dist=None, rgb=False, debug=False):
-        self.conf = conf if conf is not None else getattr(cfg, "CONF", 0.15)
-        self.scales = tuple(scales) if scales is not None else tuple(getattr(cfg, "SCALES", (1.0,)))
-        self.gamma = gamma if gamma is not None else getattr(cfg, "GAMMA", 1.0)
-        self.flip = flip if flip is not None else getattr(cfg, "FLIP", False)
-        self.merge_dist = merge_dist if merge_dist is not None else getattr(cfg, "MERGE_DIST_PX", 48.0)
+        """Argumen None memakai nilai dari config.py."""
+        self.conf = conf if conf is not None else cfg.CACHE_CONF_DEFAULT
+        self.scales = tuple(scales) if scales is not None else tuple(cfg.SCALES)
+        self.gamma = gamma if gamma is not None else cfg.GAMMA
+        self.flip = flip if flip is not None else cfg.FLIP
+        self.merge_dist = merge_dist if merge_dist is not None else cfg.MERGE_DIST_PX
         self.rgb = rgb
         self.debug = debug
         self.last_peaks = []
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        torch.set_num_threads(2)
+        torch.set_num_threads(cfg.TORCH_THREADS)
         print(f"Device: {self.device} | conf={self.conf} | scales={self.scales} "
               f"| gamma={self.gamma} | flip={self.flip}")
         self.model = load_model(model_path, self.device)

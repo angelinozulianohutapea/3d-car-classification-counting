@@ -5,9 +5,9 @@ Sistem untuk video jalan raya dari satu kamera statis (misalnya di jembatan peny
 | Fungsi | Modul | Metode | Rujukan |
 | --- | --- | --- | --- |
 | Deteksi | `detector.py`, `detection_filter.py` | CenterNet (ResNet-18) menghasilkan titik pusat dan ukuran; puncak heatmap dengan max-pooling 3x3; titik diproyeksikan ke bidang jalan | Zhou dkk. 2019; Hartley & Zisserman 2004 |
-| Tracking | `tracker.py`, `kalman_filter.py` | Kalman Filter constant velocity + asosiasi Hungarian dengan gerbang adaptif; opsional dua tahap (`--conf-low`) | Kalman 1960; Kuhn 1955; Bewley dkk. 2016; Zhang dkk. 2022 |
+| Tracking | `tracker.py`, `kalman_filter.py` | Kalman Filter constant velocity + asosiasi Hungarian dengan gerbang adaptif; dua tahap aktif secara bawaan (`--conf-low`, matikan dengan 0) | Kalman 1960; Kuhn 1955; Bewley dkk. 2016; Zhang dkk. 2022 |
 | Klasifikasi | `classifier.py` | car / van / truck dari panjang terukur, dengan voting antar frame | heuristik proyek (belum ada rujukan) |
-| Counting | `counter.py` | garis virtual; satu track dihitung sekali; log `counting_log.csv` | heuristik proyek (belum ada rujukan) |
+| Counting | `counter.py` | dua arah (sisi median menentukan arah); satu track dihitung sekali; log `counting_log.csv` | heuristik proyek (belum ada rujukan) |
 
 Kotak 3D berorientasi (`box3d.py`, `visualize.py`) hanya untuk tampilan dan tidak memengaruhi hasil keempat fungsi di atas.
 
@@ -62,6 +62,8 @@ python -m tools.calibrate_tuner VIDEO.mp4 --frame 100
 
 Setel `PITCH` sampai garis horizon pas, lalu `FOCAL` dan `HEIGHT` sampai grid searah marka jalan, geser `GRID_OX`, lalu letakkan kotak hijau (`REF_X`, `REF_Z`) di atas satu mobil. Tekan `q`; tiga baris yang tercetak (`PITCH_DEG`, `CAM_HEIGHT_M`, `FOCAL_PX`) disalin ke `config.py`. ESC untuk batal.
 
+Jalur valid dan median pemisah dua arah juga harus diukur dari video sendiri (`LANE_X_MIN`, `LANE_X_MAX`, `MEDIAN_X` di `config.py`; nilai bawaan hanya perkiraan). Alatnya `python -m tools.box_tuner`: klik kendaraan terluar di tiap sisi dan baca nilai x-nya.
+
 ### 2. Menjalankan
 
 ```
@@ -74,11 +76,12 @@ Pada contoh terakhir, jalankan pertama membuat `det_low.pkl`; jalankan berikutny
 
 | Opsi | Keterangan |
 | --- | --- |
-| `--conf` | Ambang skor deteksi (default 0,5) |
-| `--conf-low` | Aktifkan asosiasi dua tahap: deteksi skor antara `--conf-low` dan `--conf` hanya menyambung track yang ada. Harus > 0 dan < `--conf` |
-| `--line-y` | Posisi garis counting, meter dari kamera (default 15) |
+| `--conf` | Ambang skor tinggi: deteksi di atasnya boleh membuat track baru (default 0,4; `DEFAULT_CONF`) |
+| `--conf-low` | Asosiasi dua tahap, aktif secara bawaan (default 0,2; `DEFAULT_CONF_LOW`): deteksi skor antara `--conf-low` dan `--conf` hanya menyambung track yang ada. Harus < `--conf`; `0` mematikannya (satu tahap) |
+| `--line-y` | Garis counting kendaraan yang mendekat, meter dari kamera (default 15) |
+| `--line-y-away` | Garis untuk kendaraan yang menjauh (default 25). Catatan: saat ini hitungan arah menjauh ditentukan oleh `AWAY_MIN_TRAVEL_M`, bukan oleh garis ini (lihat Aturan penting) |
 | `--cache` | File cache deteksi mentah: ada = dimuat, belum ada = dibuat |
-| `--cache-conf` | Ambang skor terendah saat membuat cache (default 0,2) |
+| `--cache-conf` | Ambang skor terendah saat membuat cache (default 0,15; `CACHE_CONF_DEFAULT`) |
 | `--no-show` | Tanpa jendela (SSH / VS Code remote) |
 | `--no-save` | Jangan simpan PNG tiap frame ke `output_frames/` |
 | `--play` | Langsung jalan tanpa menunggu tombol |
@@ -99,15 +102,19 @@ Tombol jendela: `SPASI` play/pause, `ESC` keluar. Parameter lain (batas lebar, j
   | `panjang_m`, `lebar_m`, `tinggi_m` | dimensi terukur (median) |
   | `x_m` | posisi lateral saat melintas |
   | `suara_car`, `suara_van`, `suara_truck` | jumlah suara tiap kelas |
+  | `arah` | `mendekat` atau `menjauh` (sisi median saat dihitung) |
 
-- Ringkasan di terminal: hitungan per kelas, daftar track yang tampil tetapi tidak dihitung (dengan keterangan), detail tiap kendaraan, dan jumlah deteksi yang dibuang filter per alasan.
+- Ringkasan di terminal: hitungan per kelas dan per arah, daftar track yang tampil tetapi tidak dihitung (dengan keterangan), detail tiap kendaraan, dan jumlah deteksi yang dibuang filter per alasan.
 - `output_frames/image_XXXX.png`: frame hasil (kecuali `--no-save`).
 
 ### Aturan penting
 
-- **Counting**: track dianggap melintas saat posisinya berpindah dari satu sisi garis ke sisi lain (arah tidak dibedakan). Satu track dihitung paling banyak sekali, hanya setelah terdeteksi minimal 3 kali (`MIN_HITS_TO_DISPLAY`).
+- **Arah**: ditentukan dari sisi median, bukan dari gerak per frame: `x < MEDIAN_X` = menjauh, selebihnya mendekat.
+- **Counting mendekat**: track dihitung saat posisinya berpindah dari satu sisi garis `--line-y` ke sisi lain, hanya bila track sudah terlihat minimal `COUNT_MIN_PRE_M` (4 m) sebelum garis. Track yang pertama terlihat lebih dekat dari itu tidak dihitung (muncul sebagai "lahir terlalu dekat garis").
+- **Counting menjauh**: track dihitung setelah bergerak menjauh minimal `AWAY_MIN_TRAVEL_M` (2 m) dari tempat pertama terlihat. Ini bukan lintasan garis, sehingga `--line-y-away` belum memengaruhi hitungan.
+- **Syarat umum**: satu track dihitung paling banyak sekali, hanya setelah terdeteksi minimal 3 kali (`MIN_HITS_TO_DISPLAY`).
 - **Klasifikasi**: panjang < 5,2 m = car; < 7,0 m = van; selain itu truck. Tiap pengamatan memberi satu suara; kelas akhir adalah suara terbanyak.
-- **Filter deteksi**: dibuang bila di luar jalur (\|x\| > 11 m), lebar < 0,6 m, tinggi di luar 1 sampai 5 m, panjang < 3 m, atau tinggi > panjang.
+- **Filter deteksi**: dibuang bila di luar jalur (`LANE_X_MIN` sampai `LANE_X_MAX`, bawaan -30 sampai 11 m), lebar < 0,6 m, tinggi di luar 1 sampai 5 m, panjang < 3 m, atau tinggi > panjang.
 
 ## Pelabelan, fine-tuning, dan evaluasi
 
@@ -146,7 +153,9 @@ terlewat,truck
 | Ukuran kotak berubah-ubah | turunkan `DIM_STD_PER_STEP` |
 | Objek terlambat muncul | turunkan `MIN_HITS_TO_DISPLAY` |
 | ID sering berganti untuk mobil yang sama | naikkan `MAX_LOST_FRAMES` atau longgarkan `GATE_*` |
-| Mobil hilang-timbul sehingga tidak terhitung | aktifkan `--conf-low` dan/atau turunkan `--conf` |
+| Mobil hilang-timbul sehingga tidak terhitung | pastikan `--conf-low` tidak 0 dan/atau turunkan `--conf` |
+| Mobil gelap atau kecil/jauh terlewat | coba `GAMMA` (mencerahkan area gelap) atau `SCALES = (1.0, 1.5)` (lebih lambat); bandingkan dengan metrik sebelum memilih |
+| Kendaraan yang baru muncul dekat garis tidak terhitung | turunkan `COUNT_MIN_PRE_M` atau pindahkan `--line-y` lebih jauh dari tempat track biasa mulai terlihat |
 | Satu mobil menjadi dua track | naikkan `CONFLICT_DIST_M` |
 | Deteksi palsu masuk hitungan | naikkan `--conf`; periksa alasan penolakan dengan `--debug` |
 
@@ -156,7 +165,7 @@ terlewat,truck
 python -m tests.test_pipeline
 ```
 
-Menguji dengan data sintetis (tanpa video dan tanpa PyTorch): geometri, Kalman Filter, klasifikasi, filter deteksi, tracker (satu mobil satu track, bertahan saat deteksi hilang sebentar, track hilang dihapus, deteksi skor rendah hanya menyambung track, duplikat digabung, dua mobil tetap terpisah), counting pada aliran sintetis, dan perhitungan `evaluasi_counting`. Uji ini memastikan logika tidak rusak; bukan pengganti evaluasi pada video nyata.
+Menguji dengan data sintetis (tanpa video dan tanpa PyTorch): geometri, Kalman Filter, klasifikasi, filter deteksi, tracker (satu mobil satu track, bertahan saat deteksi hilang sebentar, track hilang dihapus, deteksi skor rendah hanya menyambung track, duplikat digabung, dua mobil tetap terpisah), counting satu dan dua arah pada aliran sintetis, perhitungan `evaluasi_counting`, dan urutan ambang di `config.py`. Detektor (`detector.py`) tidak termasuk karena butuh PyTorch dan model. Uji ini memastikan logika tidak rusak; bukan pengganti evaluasi pada video nyata.
 
 ## Bagian tanpa rujukan literatur
 
@@ -165,7 +174,10 @@ Bagian berikut dipilih manual dan diuji pada video uji; nilainya belum divalidas
 - ambang panjang klasifikasi (5,2 m dan 7,0 m), template dan batas ukuran per kelas, serta voting
 - bentuk dan angka gerbang asosiasi adaptif, `MAX_LOST_FRAMES`, `MIN_HITS_TO_DISPLAY`, `CONFLICT_DIST_M`
 - besaran Q dan R Kalman Filter (modelnya sendiri punya rujukan)
-- aturan garis virtual untuk counting
+- aturan counting: garis virtual untuk arah mendekat, `COUNT_MIN_PRE_M`, aturan "bergerak `AWAY_MIN_TRAVEL_M`" untuk arah menjauh, dan penentuan arah dari sisi median (`MEDIAN_X`)
+- ambang `DEFAULT_CONF`, `DEFAULT_CONF_LOW`, dan `CACHE_CONF_DEFAULT`
+- perbaikan akurasi detektor: koreksi `GAMMA`, `SCALES`, `FLIP`, penggabungan `MERGE_DIST_PX`, dan batas bawah ukuran (clamp, bukan membuang deteksi). Gamma belum ikut dalam fine-tuning maupun `tools/cek_fp`, sehingga metriknya belum mencerminkan pengaruhnya
+- batas jalur `LANE_X_MIN` dan `LANE_X_MAX`, serta aturan duplikat yang mempertahankan track dengan lebih banyak hit
 - pencampuran template dan ukuran terukur, serta penghalusan yaw (hanya tampilan)
 - toleransi 48 piksel dan `--sigma` 0,8 pada fine-tuning
 
@@ -177,7 +189,7 @@ Bagian berikut dipilih manual dan diuji pada video uji; nilainya belum divalidas
 - Data latih dan validasi berasal dari satu video (dibagi menurut nomor frame), jadi hasilnya belum menunjukkan kemampuan pada video lain.
 - Kalibrasi disetel manual; pitch, tinggi, dan focal saling memengaruhi.
 - Bidang jalan dianggap datar dan kamera statis. Resolusi harus 1280x720.
-- Counting tidak membedakan arah, dan track yang belum layak tampil saat melewati garis tidak dihitung. Dua kendaraan yang lebih dekat dari `CONFLICT_DIST_M` bisa dianggap duplikat.
+- Arah ditentukan dari sisi median (`MEDIAN_X`), sehingga median dan jalur harus diukur dari video sendiri. Arah menjauh dihitung dari jarak tempuh, bukan lintasan garis. Track yang belum layak tampil saat melewati garis, atau yang pertama terlihat kurang dari `COUNT_MIN_PRE_M` sebelum garis (arah mendekat), tidak dihitung. Dua kendaraan yang lebih dekat dari `CONFLICT_DIST_M` bisa dianggap duplikat.
 - Metrik tracking (MOTA, IDF1) dan klasifikasi (confusion matrix) belum ada karena belum ada label ID dan kelas.
 
 ## Rujukan

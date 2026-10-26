@@ -27,9 +27,14 @@ FOCAL_PX = 770.00      # focal length (piksel)
 # Stride 32 karena backbone ResNet-18 dipotong di layer4 [kode asal].
 # ----------------------------------------------------------------------
 MODEL_SCALE = 32
-DEFAULT_CONF = 0.5         # ambang skor deteksi [kode asal]
-CACHE_CONF_DEFAULT = 0.15  # ambang terendah saat membuat cache [heuristik]; samakan dengan CONF
-                           # agar cache memuat semua deteksi yang terlihat di live preview
+# Ambang skor (satu sumber; run.py, tools, dan Detector membacanya dari sini):
+DEFAULT_CONF = 0.4         # run.py --conf: skor tinggi, boleh membuat track baru [heuristik]
+DEFAULT_CONF_LOW = 0.2     # run.py --conf-low: skor rendah, hanya menyambung track yang ada
+                           # (asosiasi dua tahap, ByteTrack); 0 = matikan, satu tahap saja [heuristik]
+CACHE_CONF_DEFAULT = 0.15  # skor terendah yang disimpan saat membuat cache, dan nilai bawaan
+                           # Detector bila conf tidak diberikan [heuristik]; harus <= DEFAULT_CONF_LOW
+                           # agar cache memuat semua deteksi yang dipakai tracker
+TORCH_THREADS = 2          # jumlah thread CPU untuk PyTorch; sesuaikan dengan jumlah core mesin
 
 # ----------------------------------------------------------------------
 # Filter deteksi (setelah diproyeksikan ke bidang jalan)
@@ -136,8 +141,10 @@ OUTPUT_DIR = "output_frames"
 # ----------------------------------------------------------------------
 # Akurasi deteksi (dipakai detector.py) [heuristik, nilai awal untuk diuji]
 # ----------------------------------------------------------------------
-CONF = 0.15            # ambang skor; DEFAULT_CONF=0.5 di atas terlalu ketat
-SCALES = (1.0,)       # skala input; (1.0, 1.5) membantu mobil kecil/jauh tetapi ~3,3x lebih lambat
+SCALES = (1.0,)        # skala input; (1.0, 1.5) membantu mobil kecil/jauh tetapi ~3,3x lebih lambat
 GAMMA = 2.0            # >1 mencerahkan area gelap (mobil hitam); 1.0 = mati
+# PERHATIAN: gamma hanya dipakai Detector.detect() (run.py). tools/finetune_heatmap.py melatih
+# tanpa gamma dan tools/cek_fp.py mengukur lewat Detector.infer() tanpa gamma, jadi metrik
+# keduanya belum mencerminkan GAMMA != 1.0. Bandingkan GAMMA 1,0 dan 2,0 dengan jalur ukur yang sama.
 FLIP = False           # True = tambah pass flip horizontal (2x lebih lambat)
 MERGE_DIST_PX = 48.0   # jarak piksel untuk menggabungkan deteksi duplikat
