@@ -10,3 +10,6 @@ lembar_*.png
 cek_*/
 output_frames/
 video_tracking_carla/
+/*.jpg
+/*.png
+tracking_log.txt

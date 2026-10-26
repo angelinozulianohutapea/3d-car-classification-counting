@@ -43,8 +43,11 @@ counter.py           garis virtual dan log CSV
 box3d.py             dimensi dan arah kotak 3D (tampilan)
 visualize.py         menggambar hasil
 run.py               program utama
-tools/               kalibrasi, pelabelan, fine-tuning, evaluasi
+tools/               kalibrasi, pelabelan, fine-tuning, evaluasi deteksi dan counting
 tests/               uji sintetis (tanpa video dan tanpa PyTorch)
+annotation/          pembuatan dataset CARLA (bawaan proyek asal)
+centernet-3d-bbox.ipynb  pelatihan model awal pada data CARLA
+labels.json          label titik pusat mobil (frame 0 sampai 472)
 ```
 
 ## Cara pakai
@@ -115,7 +118,20 @@ python -m tools.label_points VIDEO.mp4 --out labels.json --cache det_low.pkl
 python -m tools.finetune_heatmap VIDEO.mp4 centernet-3d-bbox.pth --val-from 330
 python -m tools.cek_fp VIDEO.mp4 centernet-ft.pth --conf 0.3 --from 330 --to 472 --out cek_ft
 python -m tools.lembar_hitungan VIDEO.mp4 --log counting_log.csv --line-y 15
+python -m tools.evaluasi_counting --log counting_log.csv --truth kebenaran.csv
 ```
+
+`evaluasi_counting` membandingkan `counting_log.csv` dengan hitungan manual. Berkas `kebenaran.csv` dibuat dengan memeriksa lembar hasil `lembar_hitungan` (satu frame per kendaraan terhitung), lalu mengisi kelas benar tiap ID:
+
+```
+id,kelas_benar
+1,car
+2,van
+3,bukan
+terlewat,truck
+```
+
+`bukan` berarti yang terhitung ternyata bukan kendaraan (deteksi palsu) atau bukan kelas yang ditangani; baris `terlewat` ditambahkan satu per kendaraan yang melewati garis tetapi tidak terhitung (didapat dari menonton video). Keluarannya: jumlah per kelas (prediksi vs manual), precision/recall/F1 counting, akurasi klasifikasi, dan confusion matrix.
 
 `label_points`: klik kiri tambah titik, klik kanan hapus, `d`/`a` frame ±1, `w`/`s` frame ±5, `u` batalkan, `SPASI` tandai SELESAI, `m` tampil/sembunyi titik model, `q`/ESC simpan dan keluar. Pada frame SELESAI, semua mobil harus diberi titik.
 
@@ -140,7 +156,7 @@ python -m tools.lembar_hitungan VIDEO.mp4 --log counting_log.csv --line-y 15
 python -m tests.test_pipeline
 ```
 
-Menguji geometri, Kalman Filter, klasifikasi, filter, tracking, dan counting dengan data sintetis (tanpa video dan tanpa PyTorch).
+Menguji dengan data sintetis (tanpa video dan tanpa PyTorch): geometri, Kalman Filter, klasifikasi, filter deteksi, tracker (satu mobil satu track, bertahan saat deteksi hilang sebentar, track hilang dihapus, deteksi skor rendah hanya menyambung track, duplikat digabung, dua mobil tetap terpisah), counting pada aliran sintetis, dan perhitungan `evaluasi_counting`. Uji ini memastikan logika tidak rusak; bukan pengganti evaluasi pada video nyata.
 
 ## Bagian tanpa rujukan literatur
 
