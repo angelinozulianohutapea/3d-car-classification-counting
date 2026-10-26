@@ -17,7 +17,7 @@ Kolom "Dasar" di komentar menyatakan asal nilai:
 # ----------------------------------------------------------------------
 IMG_W = 1280
 IMG_H = 720
-PITCH_DEG = 9.80       # kamera menunduk (derajat)
+PITCH_DEG = 9.80       # kamera menunduk (derajat)  [BELUM disetel untuk video nyata]
 CAM_HEIGHT_M = 8.30    # tinggi kamera dari jalan (meter)
 FOCAL_PX = 770.00      # focal length (piksel)
 
@@ -28,13 +28,22 @@ FOCAL_PX = 770.00      # focal length (piksel)
 # ----------------------------------------------------------------------
 MODEL_SCALE = 32
 DEFAULT_CONF = 0.5         # ambang skor deteksi [kode asal]
-CACHE_CONF_DEFAULT = 0.2   # ambang terendah saat membuat cache [heuristik]
+CACHE_CONF_DEFAULT = 0.15  # ambang terendah saat membuat cache [heuristik]; samakan dengan CONF
+                           # agar cache memuat semua deteksi yang terlihat di live preview
 
 # ----------------------------------------------------------------------
 # Filter deteksi (setelah diproyeksikan ke bidang jalan)
 # [kode asal] untuk struktur filter; angka ambang [heuristik]
 # ----------------------------------------------------------------------
-LANE_HALF_WIDTH_M = 11.0   # deteksi di luar |x| > ini dibuang
+# Jalur valid (meter, x dunia: 0 = tengah gambar, negatif = kiri). Dua arah:
+# sisi kanan gambar = kendaraan MENDEKAT, sisi kiri = MENJAUH (jalan tol terpisah median).
+# Deteksi di luar [LANE_X_MIN, LANE_X_MAX] dibuang. UKUR batasnya dengan
+# python -m tools.box_tuner (klik kendaraan terluar, baca x). Nilai kiri hanya perkiraan.
+LANE_X_MIN = -30.0   # hasil sweep: -30 menangkap kendaraan jalur terluar, -34 tidak menambah apa pun
+LANE_X_MAX = 11.0
+# Median pemisah dua arah (x dunia). x < MEDIAN_X = jalur kiri (MENJAUH), selebihnya MENDEKAT.
+# Arah ditentukan dari sisi median, bukan dari gerak per frame, karena gerak per frame berisik.
+MEDIAN_X = -8.0
 MIN_WIDTH_M = 0.6          # sebelumnya 1.0; dilonggarkan karena lebar dari model CARLA sering meleset
 MAX_WIDTH_M = 2.5          # lebar dipotong sampai batas ini
 HEIGHT_RANGE_M = (1.0, 5.0)
@@ -112,6 +121,23 @@ YAW_MAX_DEG = 35.0
 # ----------------------------------------------------------------------
 # Counting dengan garis virtual [heuristik]
 # ----------------------------------------------------------------------
-LINE_Y_DEFAULT_M = 15.0    # jarak garis dari kamera (meter)
+LINE_Y_DEFAULT_M = 15.0    # garis untuk kendaraan yang MENDEKAT (meter dari kamera)
+# Garis untuk kendaraan yang MENJAUH. Harus lebih jauh dari tempat track mulai
+# terdeteksi (bawah gambar sekitar 12 m), kalau tidak track lahir setelah garis dan tak terhitung.
+LINE_Y_AWAY_DEFAULT_M = 25.0
+# Track harus sudah terlihat minimal sekian meter SEBELUM garis agar boleh dihitung.
+# Mencegah track yang baru lahir dekat garis (ID putus lalu dibuat ulang) ikut terhitung.
+COUNT_MIN_PRE_M = 4.0
+# Jalur kiri (menjauh): dihitung setelah bergerak sejauh ini (m) dari tempat pertama terlihat.
+AWAY_MIN_TRAVEL_M = 2.0
 COUNT_LOG = "counting_log.csv"
 OUTPUT_DIR = "output_frames"
+
+# ----------------------------------------------------------------------
+# Akurasi deteksi (dipakai detector.py) [heuristik, nilai awal untuk diuji]
+# ----------------------------------------------------------------------
+CONF = 0.15            # ambang skor; DEFAULT_CONF=0.5 di atas terlalu ketat
+SCALES = (1.0,)       # skala input; (1.0, 1.5) membantu mobil kecil/jauh tetapi ~3,3x lebih lambat
+GAMMA = 2.0            # >1 mencerahkan area gelap (mobil hitam); 1.0 = mati
+FLIP = False           # True = tambah pass flip horizontal (2x lebih lambat)
+MERGE_DIST_PX = 48.0   # jarak piksel untuk menggabungkan deteksi duplikat

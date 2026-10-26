@@ -69,21 +69,29 @@ def draw_tracks(frame, tracker):
     return frame
 
 
-def draw_counting_line(frame, line_y):
-    """Garis virtual di bidang jalan pada kedalaman line_y."""
+def draw_counting_line(frame, line_y, line_y_away=None):
+    """Garis virtual: merah = jalur mendekat (kanan median), oranye = jalur menjauh (kiri)."""
     h = frame.shape[0]
-    p0 = world_to_image(np.array([-cfg.LANE_HALF_WIDTH_M, 0.0, line_y]), h)
-    p1 = world_to_image(np.array([cfg.LANE_HALF_WIDTH_M, 0.0, line_y]), h)
-    cv2.line(frame, p0, p1, (0, 0, 255), 3)
+    if line_y_away is None:
+        line_y_away = line_y
+    segments = [
+        (line_y, cfg.MEDIAN_X, cfg.LANE_X_MAX, (0, 0, 255)),
+    ]
+    for z, x0, x1, color in segments:
+        p0 = world_to_image(np.array([x0, 0.0, z]), h)
+        p1 = world_to_image(np.array([x1, 0.0, z]), h)
+        cv2.line(frame, p0, p1, color, 3)
     return frame
 
 
-def draw_counts(frame, counts):
-    """Panel hitungan per kelas di pojok kiri bawah."""
+def draw_counts(frame, counts, dir_counts=None):
+    """Panel hitungan per kelas (dan per arah bila diberikan) di pojok kiri bawah."""
     lines = [f"Total: {sum(counts.values())}"] + [f"{c}: {counts[c]}" for c in cfg.CLASSES]
+    if dir_counts:
+        lines += [f"{d}: {sum(v.values())}" for d, v in dir_counts.items()]
     h = frame.shape[0]
     box_h = 26 * len(lines) + 10
-    cv2.rectangle(frame, (10, h - box_h - 10), (190, h - 10), (0, 0, 0), -1)
+    cv2.rectangle(frame, (10, h - box_h - 10), (230 if dir_counts else 190, h - 10), (0, 0, 0), -1)
     for i, text in enumerate(lines):
         cv2.putText(frame, text, (18, h - box_h + 18 + 26 * i),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
@@ -100,6 +108,23 @@ def draw_debug(frame, marks):
             cv2.circle(frame, pt, 6, (0, 0, 255), -1)
             cv2.putText(frame, reason, (pt[0] + 8, pt[1] - 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+    return frame
+
+
+def draw_count_marks(frame, tracker, counter, frame_idx, hold=30):
+    """Penanda 'HITUNG' di atas kendaraan selama `hold` frame sejak terhitung.
+    Oranye = menjauh, hijau = mendekat."""
+    for t in tracker.tracks:
+        rec = counter.counted_at.get(t.id)
+        if rec is None or t.display_id is None:
+            continue
+        f0, direction = rec
+        if not (0 <= frame_idx - f0 < hold):
+            continue
+        color = (0, 165, 255) if direction == "menjauh" else (0, 200, 0)
+        top = project(np.array([t.x(), t.dims()[1], t.y()]))
+        tx, ty = top[0], frame.shape[0] - top[1]
+        draw_label(frame, [f"HITUNG {direction}"], tx, ty - 34, color, scale=0.55)
     return frame
 
 

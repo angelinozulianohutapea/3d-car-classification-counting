@@ -3,7 +3,7 @@ Metrik deteksi titik pusat terhadap label titik (labels.json).
 
 Pencocokan: tiap deteksi (urut baris-per-baris) dicocokkan dengan label terdekat
 yang belum terpakai dalam jarak <= TOL_PX piksel; hanya deteksi di dalam jalur
-(|x| <= config.LANE_HALF_WIDTH_M) yang dihitung. Karena label berupa titik,
+(LANE_X_MIN <= x <= LANE_X_MAX di config.py) yang dihitung. Karena label berupa titik,
 IoU dan mAP tidak berlaku. Benar = TP, palsu = FP, terlewat = FN.
 
 Precision, recall, F1: definisi standar, lihat D. M. W. Powers, "Evaluation:
@@ -21,7 +21,7 @@ TOL_PX = 48
 
 
 def in_lane(x, y):
-    return abs(get_position_ground(x, y)[0]) <= cfg.LANE_HALF_WIDTH_M
+    return cfg.LANE_X_MIN <= get_position_ground(x, y)[0] <= cfg.LANE_X_MAX
 
 
 def score_frame(dets, gts, tol=TOL_PX):

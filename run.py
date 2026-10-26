@@ -19,21 +19,24 @@ from counter import LineCounter
 from detection_filter import to_world_detections
 from kalman_filter import TIME_INTERVAL_FALLBACK
 from tracker import Tracker
-from visualize import draw_counting_line, draw_counts, draw_debug, draw_frame_id, draw_tracks
+from visualize import (draw_count_marks, draw_counting_line, draw_counts, draw_debug,
+                       draw_frame_id, draw_tracks)
 
 
 def parse_args():
     p = ArgumentParser(description="Deteksi, tracking, klasifikasi, dan counting kendaraan")
     p.add_argument("video")
     p.add_argument("model", help="Bobot CenterNet (.pth)")
-    p.add_argument("--conf", type=float, default=cfg.DEFAULT_CONF, help="Ambang skor deteksi")
+    p.add_argument("--conf", type=float, default=0.4, help="Ambang skor deteksi")
     p.add_argument(
-        "--conf-low", type=float, default=None,
+        "--conf-low", type=float, default=0.2,
         help="Aktifkan asosiasi dua tahap (ByteTrack, Zhang dkk. 2022): deteksi skor antara "
         "ini dan --conf hanya menyambung track yang ada. Harus > 0 dan < --conf",
     )
     p.add_argument("--line-y", type=float, default=cfg.LINE_Y_DEFAULT_M,
-                   help="Posisi garis counting (meter dari kamera)")
+                   help="Garis counting kendaraan yang MENDEKAT (meter dari kamera)")
+    p.add_argument("--line-y-away", type=float, default=cfg.LINE_Y_AWAY_DEFAULT_M,
+                   help="Garis counting kendaraan yang MENJAUH (meter dari kamera)")
     p.add_argument("--cache", default=None,
                    help="File cache deteksi mentah: ada = dimuat, belum ada = dibuat")
     p.add_argument("--cache-conf", type=float, default=cfg.CACHE_CONF_DEFAULT,
@@ -80,7 +83,7 @@ def main():
         os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
 
     tracker = Tracker(dt)
-    counter = LineCounter(args.line_y)
+    counter = LineCounter(args.line_y, args.line_y_away)
     rejected_total = {}
     play = args.play
     need_draw = (not args.no_show) or (not args.no_save)
@@ -118,10 +121,11 @@ def main():
 
         if need_draw:
             frame = draw_tracks(frame, tracker)
-            frame = draw_counting_line(frame, args.line_y)
+            frame = draw_count_marks(frame, tracker, counter, idx)
+            frame = draw_counting_line(frame, args.line_y, args.line_y_away)
             if args.debug:
                 frame = draw_debug(frame, marks)
-            frame = draw_counts(frame, counter.counts)
+            frame = draw_counts(frame, counter.counts, counter.dir_counts)
             draw_frame_id(frame, idx)
 
         if not args.no_show:

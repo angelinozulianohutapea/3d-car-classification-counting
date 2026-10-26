@@ -15,7 +15,7 @@ from geometry import CAMERA_POS, get_position_ground
 
 def reject_reason(box, ground, depth):
     """Alasan deteksi dibuang, atau None bila lolos."""
-    if abs(ground[0]) > cfg.LANE_HALF_WIDTH_M:
+    if not (cfg.LANE_X_MIN <= ground[0] <= cfg.LANE_X_MAX):
         return "luar jalur"
     if box["w"] * depth < cfg.MIN_WIDTH_M:
         return "w kecil"
