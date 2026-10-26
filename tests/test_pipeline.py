@@ -73,6 +73,28 @@ def test_counting():
         assert len(ids) == len(set(ids))  # tiap track dihitung sekali
 
 
+def test_two_way():
+    """Dua arah: arus mendekat (kanan) dan menjauh (kiri) dihitung terpisah."""
+    near, v_near = make_stream(seed=0, fp_rate=0.0)
+    far, v_far = make_stream(seed=1, fp_rate=0.0)
+    frames = []
+    for a, b in zip(near, far):
+        # arus kedua: dicerminkan jadi menjauh (y naik) dan digeser ke jalur kiri
+        mirrored = [{**d, "x": d["x"] - 18.0, "y": 39.0 - d["y"]} for d in b]
+        frames.append(a + mirrored)
+    tracker, counter = Tracker(DT), LineCounter(15.0, 25.0)
+    for idx, dets in enumerate(frames):
+        tracker.update(dets, conf_high=0.5)
+        tracker.assign_display_ids()
+        counter.update(tracker.tracks, idx)
+    n = len(v_near)
+    truth = {c: sum(v["kind"] == c for v in v_near + v_far) for c in cfg.CLASSES}
+    assert sum(counter.dir_counts["mendekat"].values()) == n, counter.dir_counts
+    assert sum(counter.dir_counts["menjauh"].values()) == len(v_far), counter.dir_counts
+    assert counter.counts == truth, (counter.counts, truth)
+    assert {e[-1] for e in counter.events} == {"mendekat", "menjauh"}
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

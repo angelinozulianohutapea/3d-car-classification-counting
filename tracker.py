@@ -191,7 +191,7 @@ class Tracker:
                 continue
             t = snapshot[i]
             t.unassociated_counter += 1
-            if t.x() < -cfg.LANE_HALF_WIDTH_M or t.x() >= cfg.LANE_HALF_WIDTH_M:
+            if not (cfg.LANE_X_MIN <= t.x() < cfg.LANE_X_MAX):
                 self._kill(t.id)  # keluar jalur
             elif t.unassociated_counter >= cfg.MAX_LOST_FRAMES:
                 self._kill(t.id)  # hilang terlalu lama
@@ -200,10 +200,11 @@ class Tracker:
             if t.y() > cfg.MAX_TRACK_DEPTH_M:
                 self._kill(t.id)
 
-        # duplikat: pertahankan track yang lebih tua
+        # duplikat: pertahankan track dengan lebih banyak hit (bukti kendaraan nyata);
+        # umur hanya pemutus seri. Track hantu 1-hit tidak boleh mengalahkan track nyata.
         snapshot = self.tracks.copy()
         for i, a in enumerate(snapshot):
             for b in snapshot[i + 1:]:
                 d2 = (a.x() - b.x()) ** 2 + (a.y() - b.y()) ** 2
                 if d2 < self._conflict_dist_sq:
-                    self._kill(a.id if a.age < b.age else b.id)
+                    self._kill(a.id if (a.hits, a.age) < (b.hits, b.age) else b.id)

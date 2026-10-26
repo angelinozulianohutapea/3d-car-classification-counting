@@ -21,6 +21,7 @@ def main():
     ap.add_argument("video")
     ap.add_argument("--log", default=cfg.COUNT_LOG)
     ap.add_argument("--line-y", type=float, default=cfg.LINE_Y_DEFAULT_M)
+    ap.add_argument("--line-y-away", type=float, default=cfg.LINE_Y_AWAY_DEFAULT_M)
     ap.add_argument("--per", type=int, default=9, help="frame per lembar (kelipatan 3)")
     args = ap.parse_args()
 
@@ -35,7 +36,8 @@ def main():
         ok, frame = cap.read()
         if not ok:
             continue
-        u, v = world_to_image(np.array([float(r["x_m"]), 0.0, args.line_y]), frame.shape[0])
+        line = args.line_y_away if r.get("arah") == "menjauh" else args.line_y
+        u, v = world_to_image(np.array([float(r["x_m"]), 0.0, line]), frame.shape[0])
         cv2.circle(frame, (u, v), 14, (255, 0, 255), 4)
         cv2.putText(frame, f"ID {r['id']} | frame {i} | prediksi: {r['kelas']}", (20, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 255, 255), 3)
