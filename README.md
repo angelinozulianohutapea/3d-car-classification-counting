@@ -123,7 +123,7 @@ Model awal dilatih pada data simulasi CARLA. Untuk menyesuaikannya dengan video 
 ```
 python -m tools.label_points VIDEO.mp4 --out labels.json --cache det_low.pkl
 python -m tools.finetune_heatmap VIDEO.mp4 centernet-3d-bbox.pth --val-from 330
-python -m tools.cek_fp VIDEO.mp4 centernet-ft.pth --conf 0.3 --from 330 --to 472 --out cek_ft
+python -m tools.cek_fp VIDEO.mp4 centernet-ft_TANGGAL-JAM.pth --conf 0.3 --from 330 --to 472 --out cek_ft
 python -m tools.lembar_hitungan VIDEO.mp4 --log counting_log.csv --line-y 15
 python -m tools.evaluasi_counting --log counting_log.csv --truth kebenaran.csv
 ```
@@ -140,7 +140,17 @@ terlewat,truck
 
 `bukan` berarti yang terhitung ternyata bukan kendaraan (deteksi palsu) atau bukan kelas yang ditangani; baris `terlewat` ditambahkan satu per kendaraan yang melewati garis tetapi tidak terhitung (didapat dari menonton video). Keluarannya: jumlah per kelas (prediksi vs manual), precision/recall/F1 counting, akurasi klasifikasi, dan confusion matrix.
 
-`label_points`: klik kiri tambah titik, klik kanan hapus, `d`/`a` frame ±1, `w`/`s` frame ±5, `u` batalkan, `SPASI` tandai SELESAI, `m` tampil/sembunyi titik model, `q`/ESC simpan dan keluar. Pada frame SELESAI, semua mobil harus diberi titik.
+`label_points`: klik kiri tambah titik, klik kanan hapus, `d`/`a` frame ±1, `w`/`s` frame ±5, `u` batalkan, `1`/`2`/`3` beri kelas car/van/truck pada titik terakhir (`0` hapus kelas), `SPASI` tandai SELESAI, `m` tampil/sembunyi titik model, `q`/ESC simpan dan keluar. Pada frame SELESAI, semua mobil harus diberi titik. Kelas bersifat opsional dan disimpan di `labels.json` pada kunci `kelas` (sejajar dengan `points`); berkas lama tanpa kelas tetap terbaca. Kelas belum dipakai pelatihan; fungsinya sebagai kebenaran dasar untuk menilai klasifikasi car/van/truck.
+
+**Model hasil fine-tuning berversi.** Tiap eksekusi `finetune_heatmap` membuat model baru dan tidak menimpa yang lama:
+
+| Berkas | Isi |
+| --- | --- |
+| `centernet-ft_TANGGAL-JAM.pth` | bobot baru (bila `--val-from` dipakai, yang disimpan adalah epoch dengan F1 validasi terbaik pada conf 0,3, dicek tiap 10 epoch; selain itu epoch terakhir). Nama bisa diganti dengan `--out`; bila sudah ada, ditambah `_2`, `_3`, dan seterusnya |
+| `centernet-ft_TANGGAL-JAM_perbandingan.csv` | model `asli` vs `baru` pada himpunan latih dan validasi, untuk conf 0,2 / 0,3 / 0,5: benar, palsu, terlewat, precision, recall, F1 |
+| `riwayat_model.csv` | satu baris per eksekusi (waktu, berkas model, model awal, video, epoch, epoch terbaik, lr, sigma, F1 asli dan baru); ditambah, tidak ditimpa |
+
+Jalankan `run.py` dengan model baru untuk menguji: `python run.py VIDEO.mp4 centernet-ft_TANGGAL-JAM.pth`. Karena `.pth` tidak disertakan di repositori (`.gitignore`), simpan tiap versi di Google Drive dan catat tautannya di bagian Instalasi.
 
 **Metrik deteksi** (`tools/metrics.py`, dipakai `finetune_heatmap` dan `cek_fp`): deteksi dianggap benar bila berjarak ≤ 48 piksel dari label yang belum terpakai, dihitung hanya di dalam jalur. Dilaporkan benar (TP), palsu (FP), terlewat (FN), serta precision, recall, dan F1. Karena label berupa titik, IoU dan mAP tidak berlaku. Dekode evaluasi memakai offset model, sama seperti `Detector`.
 

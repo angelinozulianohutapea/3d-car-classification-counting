@@ -13,3 +13,15 @@ video_tracking_carla/
 /*.jpg
 /*.png
 tracking_log.txt
+*.bak*
+*.patch
+*.diff
+experiments/out/
+run_log.txt
+diagnosa*.txt
+kirim*.txt
+ls_proyek.txt
+semua.txt
+sweep.txt
+centernet-ft_*_perbandingan.csv
+riwayat_model.csv

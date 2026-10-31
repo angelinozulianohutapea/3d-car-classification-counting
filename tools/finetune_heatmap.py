@@ -7,13 +7,23 @@ persamaan 1 (alpha = 2, beta = 4), mengacu pada Lin dkk., "Focal Loss for Dense
 Object Detection", ICCV 2017. Lebar Gaussian target tetap (--sigma) [heuristik];
 CenterNet memakai radius yang bergantung ukuran objek.
 
+Setiap eksekusi menghasilkan model BARU berversi (tidak menimpa model lama):
+  - centernet-ft_TANGGAL-JAM.pth        bobot hasil fine-tuning (epoch terbaik menurut
+                                        F1 validasi bila --val-from dipakai; selain itu epoch terakhir)
+  - centernet-ft_TANGGAL-JAM_perbandingan.csv   tabel model asli vs model baru
+  - riwayat_model.csv                   satu baris per eksekusi (ditambah, tidak ditimpa)
+
 Pakai (dari folder proyek):
   python -m tools.finetune_heatmap VIDEO.mp4 centernet-3d-bbox.pth --val-from 330
+  python -m tools.finetune_heatmap VIDEO.mp4 centernet-3d-bbox.pth --val-from 330 --out model-v2.pth
 """
 
 import copy
+import csv
 import json
+import os
 from argparse import ArgumentParser
+from datetime import datetime
 
 import cv2
 import numpy as np
@@ -21,9 +31,43 @@ import torch
 
 import config as cfg
 from detector import build_preprocess, decode_points, load_model
-from tools.metrics import TOL_PX, in_lane, score_frame, summary
+from tools.metrics import TOL_PX, in_lane, prf, score_frame, summary
 
 STRIDE = cfg.MODEL_SCALE
+EVAL_CONFS = (0.2, 0.3, 0.5)
+BEST_CONF = 0.3  # ambang untuk memilih epoch terbaik dan untuk riwayat
+EVAL_EVERY = 10  # epoch
+
+CSV_HEADER = ["model", "himpunan", "conf", "benar", "palsu", "terlewat", "precision", "recall", "F1"]
+HISTORY_HEADER = ["waktu", "berkas_model", "model_awal", "video", "labels", "epoch", "epoch_terbaik",
+                  "lr", "sigma", "val_from", "himpunan_acuan", "F1_asli", "F1_baru"]
+
+
+def unique_path(path):
+    """Jangan menimpa berkas yang sudah ada: tambahkan _2, _3, ... bila perlu."""
+    if not os.path.exists(path):
+        return path
+    stem, ext = os.path.splitext(path)
+    k = 2
+    while os.path.exists(f"{stem}_{k}{ext}"):
+        k += 1
+    return f"{stem}_{k}{ext}"
+
+
+def write_comparison_csv(path, rows):
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(CSV_HEADER)
+        w.writerows(rows)
+
+
+def append_history(path, row):
+    new = not os.path.exists(path)
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(HISTORY_HEADER)
+        w.writerow(row)
 
 
 def target_map(points, hh, ww, sigma):
@@ -53,7 +97,8 @@ def main():
     ap.add_argument("video")
     ap.add_argument("model")
     ap.add_argument("--labels", default="labels.json")
-    ap.add_argument("--out", default="centernet-ft.pth")
+    ap.add_argument("--out", default=None,
+                    help="berkas .pth keluaran (bawaan: centernet-ft_TANGGAL-JAM.pth; berkas lama tidak ditimpa)")
     ap.add_argument("--val-from", type=int, default=None, help="frame >= nilai ini dipakai validasi")
     ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--lr", type=float, default=1e-4)
@@ -101,11 +146,18 @@ def main():
             fn += len(labels[i]) - len(used)
         return tp, fp, fn
 
-    def report(tag, head, ids):
+    def report(model_name, tag, head, ids, rows):
+        """Cetak dan catat ke rows (untuk CSV) hasil evaluasi pada beberapa ambang."""
         if not ids:
             return
-        for conf in (0.2, 0.3, 0.5):
-            print(f"  {tag:10} conf {conf}: {summary(*evaluate(head, ids, conf))}")
+        for conf in EVAL_CONFS:
+            tp, fp, fn = evaluate(head, ids, conf)
+            print(f"  {tag:10} conf {conf}: {summary(tp, fp, fn)}")
+            p, r, f1 = prf(tp, fp, fn)
+            rows.append([model_name, tag, conf, tp, fp, fn, f"{p:.3f}", f"{r:.3f}", f"{f1:.3f}"])
+
+    def f1_at(head, ids, conf=BEST_CONF):
+        return prf(*evaluate(head, ids, conf))[2]
 
     all_ids = sorted(labels)
     if args.val_from is None:
@@ -119,9 +171,17 @@ def main():
     targets = {i: target_map(labels[i], hh, ww, args.sigma) for i in all_ids}
     opt = torch.optim.Adam(model.outc.parameters(), lr=args.lr)
 
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = unique_path(args.out or f"centernet-ft_{stamp}.pth")
+    csv_path = os.path.splitext(out)[0] + "_perbandingan.csv"
+    rows = []
+
     print("\nSebelum fine-tuning (model asli):")
-    report("latih", base_head, train_ids)
-    report("validasi", base_head, val_ids)
+    report("asli", "latih", base_head, train_ids, rows)
+    report("asli", "validasi", base_head, val_ids, rows)
+
+    ref_ids, ref_name = (val_ids, "validasi") if val_ids else (train_ids, "latih")
+    best_f1, best_ep, best_state = -1.0, 0, None
 
     for ep in range(1, args.epochs + 1):
         total = 0.0
@@ -133,13 +193,38 @@ def main():
             total += loss.item()
         if ep % 10 == 0 or ep == 1:
             print(f"epoch {ep:3}: loss rata-rata {total / len(train_ids):.4f}")
+        # Pilih epoch terbaik hanya bila ada data validasi terpisah; tanpa itu
+        # memilih berdasarkan data latih tidak bermakna, jadi pakai epoch terakhir.
+        if val_ids and (ep % EVAL_EVERY == 0 or ep == args.epochs):
+            f1 = f1_at(model.outc, val_ids)
+            print(f"  F1 validasi (conf {BEST_CONF}) epoch {ep}: {f1:.3f}")
+            if f1 > best_f1:
+                best_f1, best_ep = f1, ep
+                best_state = copy.deepcopy(model.outc.state_dict())
 
-    print("\nSetelah fine-tuning:")
-    report("latih", model.outc, train_ids)
-    report("validasi", model.outc, val_ids)
+    if best_state is not None:
+        model.outc.load_state_dict(best_state)
+        print(f"\nEpoch terbaik: {best_ep} (F1 validasi {best_f1:.3f}); bobot itulah yang disimpan.")
+    else:
+        best_ep = args.epochs
 
-    torch.save(model.state_dict(), args.out)
-    print(f"\nModel disimpan: {args.out}")
+    print("\nSetelah fine-tuning (model baru):")
+    report("baru", "latih", model.outc, train_ids, rows)
+    report("baru", "validasi", model.outc, val_ids, rows)
+
+    torch.save(model.state_dict(), out)
+    write_comparison_csv(csv_path, rows)
+    f1_old = f1_at(base_head, ref_ids)
+    f1_new = f1_at(model.outc, ref_ids)
+    append_history(os.path.join(os.path.dirname(os.path.abspath(out)), "riwayat_model.csv"), [
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"), os.path.basename(out), os.path.basename(args.model),
+        os.path.basename(args.video), os.path.basename(args.labels), args.epochs, best_ep,
+        args.lr, args.sigma, args.val_from if args.val_from is not None else "",
+        ref_name, f"{f1_old:.3f}", f"{f1_new:.3f}",
+    ])
+    print(f"\nModel disimpan      : {out}")
+    print(f"Tabel perbandingan  : {csv_path}")
+    print(f"Perbandingan F1 ({ref_name}, conf {BEST_CONF}): asli {f1_old:.3f} -> baru {f1_new:.3f}")
 
 
 if __name__ == "__main__":
